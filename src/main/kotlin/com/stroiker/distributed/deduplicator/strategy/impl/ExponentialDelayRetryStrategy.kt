@@ -4,32 +4,27 @@ import com.stroiker.distributed.deduplicator.exception.RetriesExceededException
 import com.stroiker.distributed.deduplicator.exception.RetryException
 import com.stroiker.distributed.deduplicator.strategy.RetryStrategy
 import java.time.Duration
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.exp
 
 class ExponentialDelayRetryStrategy(private val times: Int, private val initialDelay: Duration) : RetryStrategy {
 
-    private val threadLocalCounter: ThreadLocal<AtomicInteger> = ThreadLocal.withInitial { AtomicInteger(0) }
+    override fun <T> retry(action: () -> T): T = retry(0, action)
 
-    override fun <T> retry(action: () -> T): T =
+    private fun <T> retry(counter: Int, action: () -> T): T =
         runCatching {
-            action().also { threadLocalCounter.remove() }
+            action()
         }.getOrElse { error ->
             if (error is RetryException) {
-                val retryCounter = threadLocalCounter.get().incrementAndGet()
-                if (retryCounter <= times) {
-                    Thread.sleep(computeDelayMillis(retryCounter, initialDelay))
-                    retry(action)
+                if (counter == times) {
+                    throw RetriesExceededException(error.key, error.table)
                 } else {
-                    threadLocalCounter.remove()
-                    throw throw RetriesExceededException(error.key, error.table)
+                    Thread.sleep(computeDelayMillis(counter))
+                    retry(counter + 1, action)
                 }
-            } else {
-                threadLocalCounter.remove()
-                throw error
             }
+            throw error
         }
 
-    private fun computeDelayMillis(retryCount: Int, delay: Duration): Long =
-        if (retryCount == 0) delay.toMillis() else (delay.toMillis() * exp(retryCount.toDouble())).toLong()
+    private fun computeDelayMillis(retryCount: Int): Long =
+        if (retryCount == 0) initialDelay.toMillis() else (initialDelay.toMillis() * exp(retryCount.toDouble())).toLong()
 }
