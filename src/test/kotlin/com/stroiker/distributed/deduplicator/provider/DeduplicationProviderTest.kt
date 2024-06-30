@@ -248,7 +248,7 @@ class DeduplicationProviderTest {
         doReturn(mockResultSet).`when`(session).execute(
             argThat<Statement<*>> {
                 when (this) {
-                    is BoundStatement -> this.preparedStatement.query.startsWith("UPDATE", true)
+                    is BoundStatement -> this.preparedStatement.query.contains("INSERT", true) && this.getString(DeduplicationProvider.STATE_COLUMN) == DeduplicationProvider.RecordState.FAILED.name
                     else -> false
                 }
             }

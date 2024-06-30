@@ -3,7 +3,6 @@ package com.stroiker.distributed.deduplicator.provider
 import com.datastax.oss.driver.api.core.ConsistencyLevel.EACH_QUORUM
 import com.datastax.oss.driver.api.core.ConsistencyLevel.LOCAL_QUORUM
 import com.datastax.oss.driver.api.core.CqlSession
-import com.datastax.oss.driver.api.core.config.DefaultDriverOption
 import com.datastax.oss.driver.api.core.config.DriverConfigLoader
 import com.datastax.oss.driver.api.core.config.DriverExecutionProfile
 import com.datastax.oss.driver.api.core.cql.PreparedStatement
@@ -13,7 +12,8 @@ import com.datastax.oss.driver.api.core.type.DataTypes
 import com.datastax.oss.driver.api.core.type.codec.TypeCodecs
 import com.datastax.oss.driver.api.querybuilder.QueryBuilder
 import com.datastax.oss.driver.api.querybuilder.SchemaBuilder.createTable
-import com.datastax.oss.driver.api.querybuilder.relation.Relation
+import com.stroiker.distributed.deduplicator.Utils.getConsistencyLevel
+import com.stroiker.distributed.deduplicator.Utils.getRequestTimeout
 import com.stroiker.distributed.deduplicator.exception.DuplicateException
 import com.stroiker.distributed.deduplicator.exception.FailedException
 import com.stroiker.distributed.deduplicator.exception.RetryException
@@ -22,7 +22,7 @@ import com.stroiker.distributed.deduplicator.provider.DeduplicationProvider.Reco
 import com.stroiker.distributed.deduplicator.provider.DeduplicationProvider.RecordState.RETRY
 import com.stroiker.distributed.deduplicator.provider.DeduplicationProvider.RecordState.SUCCESS
 import com.stroiker.distributed.deduplicator.strategy.RetryStrategy
-import com.stroiker.distributed.deduplicator.strategy.impl.FixedDelayRetryStrategy
+import com.stroiker.distributed.deduplicator.strategy.impl.ExponentialDelayRetryStrategy
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -36,8 +36,8 @@ class DeduplicationProvider private constructor(
     private val preparedStatementCache = ConcurrentHashMap<String, PreparedStatement>()
 
     init {
-        when (session.context.configLoader.initialConfig.getProfile(profileName).getString(DefaultDriverOption.REQUEST_CONSISTENCY)) {
-            LOCAL_QUORUM.name(), EACH_QUORUM.name() -> {}
+        when (session.getConsistencyLevel(profileName)) {
+            LOCAL_QUORUM, EACH_QUORUM -> {}
             else -> throw UnsupportedOperationException("Only LOCAL_QUORUM or EACH_QUORUM consistency levels are supported. Weaker consistency levels can not guarantee strict deduplication")
         }
     }
@@ -48,8 +48,8 @@ class DeduplicationProvider private constructor(
         keyspace: String,
         ttl: Duration,
         block: () -> T
-    ): T = UUID.randomUUID().toString().let { selfRecordUuid ->
-        retryStrategy.retry {
+    ): T = retryStrategy.retry {
+        UUID.randomUUID().toString().let { selfRecordUuid ->
             insertRecord(key = key, keyspace = keyspace, recordUuid = selfRecordUuid, table = table, ttl = ttl)
             val successRecords = getSuccessRecords(key = key, table = table, keyspace = keyspace)
             if (successRecords.size > 1) {
@@ -104,10 +104,12 @@ class DeduplicationProvider private constructor(
     }
 
     private fun getSuccessRecords(key: String, table: String, keyspace: String): List<DeduplicationData> =
-        getSelectStatement(table = table, keyspace = keyspace).bind().setString(KEY_COLUMN, key).let { boundStatement ->
-            session.execute(boundStatement).map { row -> row.toDeduplicationData() }
-                .filter { deduplicationData -> deduplicationData.recordState == SUCCESS }
-        }
+        getSelectStatement(table = table, keyspace = keyspace).bind()
+            .setString(KEY_COLUMN, key)
+            .let { boundStatement ->
+                session.execute(boundStatement).map { row -> row.toDeduplicationData() }
+                    .filter { deduplicationData -> deduplicationData.recordState == SUCCESS }
+            }
 
     private fun insertRecord(
         key: String,
@@ -116,9 +118,12 @@ class DeduplicationProvider private constructor(
         recordUuid: String,
         ttl: Duration
     ) {
-        getInsertStatement(table = table, keyspace = keyspace).bind().setString(KEY_COLUMN, key)
+        getInsertStatement(table = table, keyspace = keyspace).bind()
+            .setString(KEY_COLUMN, key)
             .setString(STATE_COLUMN, SUCCESS.name)
-            .setString(RECORD_UUID_COLUMN, recordUuid).setInt(TTL, ttl.seconds.toInt()).also { boundStatement ->
+            .setString(RECORD_UUID_COLUMN, recordUuid)
+            .setInt(TTL, ttl.seconds.toInt())
+            .also { boundStatement ->
                 session.execute(boundStatement).wasApplied().also { applied ->
                     if (!applied) throw FailedException(key, table, "Insert record wasn't applied")
                 }
@@ -134,11 +139,13 @@ class DeduplicationProvider private constructor(
         state: RecordState,
         ttl: Duration
     ) {
-        getUpdateStatement(table = table, keyspace = keyspace).bind()
+        getUpsertStatement(table = table, keyspace = keyspace).bind()
             .setString(KEY_COLUMN, key)
             .setUuid(TIME_UUID_COLUMN, timeUuid)
-            .setString(RECORD_UUID_COLUMN, recordUuid).setString(STATE_COLUMN, state.name)
-            .setInt(TTL, ttl.seconds.toInt()).also { boundStatement ->
+            .setString(RECORD_UUID_COLUMN, recordUuid)
+            .setString(STATE_COLUMN, state.name)
+            .setInt(TTL, ttl.seconds.toInt())
+            .also { boundStatement ->
                 session.execute(boundStatement).wasApplied().also { applied ->
                     if (!applied) throw FailedException(key, table, "Update record to '$state' wasn't applied")
                 }
@@ -172,18 +179,16 @@ class DeduplicationProvider private constructor(
             )
         }
 
-    private fun getUpdateStatement(table: String, keyspace: String): PreparedStatement =
+    private fun getUpsertStatement(table: String, keyspace: String): PreparedStatement =
         preparedStatementCache.computeIfAbsent("u:$keyspace:$table") {
             createTableIfNotExist(table = table, keyspace = keyspace)
             session.prepare(
-                QueryBuilder.update(keyspace, table)
+                QueryBuilder.insertInto(keyspace, table)
+                    .value(KEY_COLUMN, QueryBuilder.bindMarker(KEY_COLUMN))
+                    .value(TIME_UUID_COLUMN, QueryBuilder.bindMarker(TIME_UUID_COLUMN))
+                    .value(RECORD_UUID_COLUMN, QueryBuilder.bindMarker(RECORD_UUID_COLUMN))
+                    .value(STATE_COLUMN, QueryBuilder.bindMarker(STATE_COLUMN))
                     .usingTtl(QueryBuilder.bindMarker(TTL))
-                    .setColumn(STATE_COLUMN, QueryBuilder.bindMarker(STATE_COLUMN))
-                    .where(
-                        Relation.column(KEY_COLUMN).isEqualTo(QueryBuilder.bindMarker(KEY_COLUMN)),
-                        Relation.column(TIME_UUID_COLUMN).isEqualTo(QueryBuilder.bindMarker(TIME_UUID_COLUMN)),
-                        Relation.column(RECORD_UUID_COLUMN).isEqualTo(QueryBuilder.bindMarker(RECORD_UUID_COLUMN))
-                    )
                     .build()
                     .setExecutionProfileName(profileName)
             )
@@ -224,7 +229,12 @@ class DeduplicationProvider private constructor(
                 .withConfigLoader(DriverConfigLoader.fromClasspath("application.conf"))
                 .build()
         }
-        private var strategy: RetryStrategy = FixedDelayRetryStrategy(3, Duration.ofMillis(100))
+        private var strategy: Lazy<RetryStrategy> = lazy {
+            ExponentialDelayRetryStrategy(
+                3,
+                session.value.getRequestTimeout(profileName).multipliedBy(2)
+            )
+        }
         private var profileName: String = DriverExecutionProfile.DEFAULT_NAME
 
         fun session(session: CqlSession): DeduplicationProviderBuilder {
@@ -233,7 +243,7 @@ class DeduplicationProvider private constructor(
         }
 
         fun strategy(strategy: RetryStrategy): DeduplicationProviderBuilder {
-            this.strategy = strategy
+            this.strategy = lazyOf(strategy)
             return this
         }
 
@@ -242,7 +252,7 @@ class DeduplicationProvider private constructor(
             return this
         }
 
-        fun build(): DeduplicationProvider = DeduplicationProvider(session.value, profileName, strategy)
+        fun build(): DeduplicationProvider = DeduplicationProvider(session.value, profileName, strategy.value)
     }
 
     companion object {

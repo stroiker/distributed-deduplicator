@@ -4,27 +4,23 @@ import com.stroiker.distributed.deduplicator.exception.RetriesExceededException
 import com.stroiker.distributed.deduplicator.exception.RetryException
 import com.stroiker.distributed.deduplicator.strategy.RetryStrategy
 import java.time.Duration
-import java.util.concurrent.atomic.AtomicInteger
 
 class FixedDelayRetryStrategy(private val times: Int, private val delay: Duration) : RetryStrategy {
 
-    private val threadLocalCounter: ThreadLocal<AtomicInteger> = ThreadLocal.withInitial { AtomicInteger(times) }
+    override fun <T> retry(action: () -> T): T = retry(times, action)
 
-    override fun <T> retry(action: () -> T): T =
+    private fun <T> retry(counter: Int, action: () -> T): T =
         runCatching {
-            action().also { threadLocalCounter.remove() }
+            action()
         }.getOrElse { error ->
             if (error is RetryException) {
-                if (threadLocalCounter.get().decrementAndGet() >= 0) {
-                    Thread.sleep(delay.toMillis())
-                    retry(action)
-                } else {
-                    threadLocalCounter.remove()
+                if (counter == 0) {
                     throw RetriesExceededException(error.key, error.table)
+                } else {
+                    Thread.sleep(delay.toMillis())
+                    retry(counter - 1, action)
                 }
-            } else {
-                threadLocalCounter.remove()
-                throw error
             }
+            throw error
         }
 }
