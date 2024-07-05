@@ -1,4 +1,4 @@
-package com.stroiker.distributed.deduplicator.strategy
+package com.stroiker.distributed.deduplicator.strategy.sync
 
 interface RetryStrategy {
 

@@ -20,8 +20,8 @@ import com.stroiker.distributed.deduplicator.exception.DuplicateException
 import com.stroiker.distributed.deduplicator.exception.FailedException
 import com.stroiker.distributed.deduplicator.exception.RetryException
 import com.stroiker.distributed.deduplicator.randomString
-import com.stroiker.distributed.deduplicator.strategy.sync.RetryStrategy
-import com.stroiker.distributed.deduplicator.strategy.sync.impl.NoRetryStrategy
+import com.stroiker.distributed.deduplicator.strategy.async.RetryStrategyAsync
+import com.stroiker.distributed.deduplicator.strategy.async.impl.NoRetryStrategyAsync
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -33,11 +33,12 @@ import org.testcontainers.junit.jupiter.Container
 import java.net.InetSocketAddress
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Future
 
-class DeduplicationProviderTest {
+class DeduplicationProviderAsyncTest {
 
     private val keyspace = "test_keyspace"
     private val table = "test_table"
@@ -60,10 +61,10 @@ class DeduplicationProviderTest {
             .build()
     )
 
-    private val provider = DeduplicationProvider.builder()
+    private val provider = DeduplicationProviderAsync.builder()
         .session(session)
         .profile(profileName)
-        .strategy(NoRetryStrategy())
+        .strategy(NoRetryStrategyAsync())
         .build()
 
     @BeforeEach
@@ -79,9 +80,10 @@ class DeduplicationProviderTest {
     fun `process one key - success`() {
         val key = randomString()
 
-        provider.process(key = key, table = table, keyspace = keyspace, ttl = Duration.ZERO) { 42 }.also { result ->
-            assertEquals(42, result)
-        }
+        provider.processAsync(key = key, table = table, keyspace = keyspace, ttl = Duration.ZERO) { 42 }.join()
+            .also { result ->
+                assertEquals(42, result)
+            }
         session.execute(
             QueryBuilder.selectFrom(keyspace, table)
                 .all()
@@ -105,16 +107,19 @@ class DeduplicationProviderTest {
     fun `process multiple duplicate keys sequentially - success`() {
         val key = randomString()
 
-        provider.process(key = key, table = table, keyspace = keyspace, ttl = Duration.ZERO) { 42 }.also { result ->
-            assertEquals(42, result)
-        }
-        assertThrows<DuplicateException> {
-            provider.process(
+        provider.processAsync(key = key, table = table, keyspace = keyspace, ttl = Duration.ZERO) { 42 }.join()
+            .also { result ->
+                assertEquals(42, result)
+            }
+        assertThrows<CompletionException> {
+            provider.processAsync(
                 key = key,
                 table = table,
                 keyspace = keyspace,
                 ttl = Duration.ZERO
-            ) { 42 }
+            ) { 42 }.join()
+        }.also { error ->
+            assertTrue(error.cause is DuplicateException)
         }
         session.execute(
             QueryBuilder.selectFrom(keyspace, table)
@@ -145,14 +150,14 @@ class DeduplicationProviderTest {
     @RetryingTest(maxAttempts = 5, name = "should process multiple duplicate keys in parallel - success")
     fun `should process multiple duplicate keys in parallel - success`() {
         val cdl = CountDownLatch(1)
-        val provider = DeduplicationProvider.builder()
+        val provider = DeduplicationProviderAsync.builder()
             .session(session)
             .profile(profileName)
             .strategy(
-                object : RetryStrategy {
-                    override fun <T> retry(action: () -> T): T {
+                object : RetryStrategyAsync {
+                    override fun <T> retryAsync(action: () -> T): CompletableFuture<T> {
                         cdl.await()
-                        return action()
+                        return CompletableFuture<T>().also { it.complete(action()) }
                     }
                 }
             )
@@ -161,22 +166,22 @@ class DeduplicationProviderTest {
         val futures = mutableListOf<Future<Void>>()
         futures.add(
             CompletableFuture.runAsync {
-                provider.process(
+                provider.processAsync(
                     key = key,
                     table = table,
                     keyspace = keyspace,
                     ttl = Duration.ZERO
-                ) { 42 }
+                ) { 42 }.join()
             }
         )
         futures.add(
             CompletableFuture.runAsync {
-                provider.process(
+                provider.processAsync(
                     key = key,
                     table = table,
                     keyspace = keyspace,
                     ttl = Duration.ZERO
-                ) { 42 }
+                ) { 42 }.join()
             }
         )
         cdl.countDown()
@@ -213,13 +218,15 @@ class DeduplicationProviderTest {
     fun `should process one key - execution error`() {
         val key = randomString()
 
-        assertThrows<IllegalArgumentException> {
-            provider.process(
+        assertThrows<CompletionException> {
+            provider.processAsync(
                 key = key,
                 table = table,
                 keyspace = keyspace,
                 ttl = Duration.ZERO
-            ) { throw IllegalArgumentException() }
+            ) { throw IllegalArgumentException() }.join()
+        }.also { error ->
+            assertTrue(error.cause is IllegalArgumentException)
         }
         session.execute(
             QueryBuilder.selectFrom(keyspace, table)
@@ -248,20 +255,24 @@ class DeduplicationProviderTest {
         doReturn(mockResultSet).`when`(session).execute(
             argThat<Statement<*>> {
                 when (this) {
-                    is BoundStatement -> this.preparedStatement.query.contains("INSERT", true) && this.getString(DeduplicationProvider.STATE_COLUMN) == DeduplicationProvider.RecordState.FAILED.name
+                    is BoundStatement -> this.preparedStatement.query.contains("INSERT", true) && this.getString(
+                        DeduplicationProvider.STATE_COLUMN
+                    ) == DeduplicationProvider.RecordState.FAILED.name
+
                     else -> false
                 }
             }
         )
-        assertThrows<FailedException> {
-            provider.process(
+        assertThrows<CompletionException> {
+            provider.processAsync(
                 key = key,
                 table = table,
                 keyspace = keyspace,
                 ttl = Duration.ZERO
-            ) { throw IllegalArgumentException() }
+            ) { throw IllegalArgumentException() }.join()
         }.also { error ->
-            assertTrue(error.suppressed.first() is IllegalArgumentException)
+            assertTrue(error.cause is FailedException)
+            assertTrue(error.cause?.suppressed?.first() is IllegalArgumentException)
         }
         session.execute(
             QueryBuilder.selectFrom(keyspace, table)
