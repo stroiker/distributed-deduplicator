@@ -1,4 +1,4 @@
-package com.stroiker.distributed.deduplicator.strategy.impl
+package com.stroiker.distributed.deduplicator.strategy.sync.impl
 
 import com.stroiker.distributed.deduplicator.exception.RetriesExceededException
 import com.stroiker.distributed.deduplicator.exception.RetryException

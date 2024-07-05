@@ -1,6 +1,6 @@
 # Introduction
 
-Distributed Deduplicator is a distributed, lock-free deduplication library based on Apache Cassandra storage that offers a high-performance, highly scalable platform with strong data consistency and non-duplicate guarantee.
+Distributed Deduplicator is a library for distributed, lock-free deduplication based on Apache Cassandra storage that offers a high-performance, highly scalable platform with strong data consistency and non-duplicate guarantee.
 
 # System requirements
 
@@ -56,3 +56,9 @@ There are 3 implemented retry strategies:
 - `NoRetryStrategy` - doesn't make retries at all;
 - `FixedDelayRetryStrategy` - makes given retries count with fixed delay between retries;
 - `ExponentialDelayRetryStrategy` - makes given retries count with exponential delay between retries;
+
+# Async
+
+You can use async flow with following class `DeduplicationProviderAsync`. It provides similar functionality as `DeduplicationProvider` (include creation mechanism) with few differences:
+1) Main function `processAsync(...)` returns `CompletableFuture` object which can be used for building asynchronous processing;
+2) Asynchronous provider uses async retry strategies same as synchronous versions. These strategies provide non-blocking approach and offer better throughput when duplicate contention is high. You can pass your own thread pool for async retries or use default `ForkJoinPool` implementation;

@@ -1,8 +1,8 @@
-package com.stroiker.distributed.deduplicator.strategy.impl
+package com.stroiker.distributed.deduplicator.strategy.sync.impl
 
 import com.stroiker.distributed.deduplicator.exception.RetriesExceededException
 import com.stroiker.distributed.deduplicator.exception.RetryException
-import com.stroiker.distributed.deduplicator.strategy.RetryStrategy
+import com.stroiker.distributed.deduplicator.strategy.sync.RetryStrategy
 import java.time.Duration
 
 class FixedDelayRetryStrategy(private val times: Int, private val delay: Duration) : RetryStrategy {
@@ -20,7 +20,8 @@ class FixedDelayRetryStrategy(private val times: Int, private val delay: Duratio
                     Thread.sleep(delay.toMillis())
                     retry(counter - 1, action)
                 }
+            } else {
+                throw error
             }
-            throw error
         }
 }

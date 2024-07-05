@@ -1,8 +1,8 @@
-package com.stroiker.distributed.deduplicator.strategy.impl
+package com.stroiker.distributed.deduplicator.strategy.sync.impl
 
 import com.stroiker.distributed.deduplicator.exception.RetriesExceededException
 import com.stroiker.distributed.deduplicator.exception.RetryException
-import com.stroiker.distributed.deduplicator.strategy.RetryStrategy
+import com.stroiker.distributed.deduplicator.strategy.sync.RetryStrategy
 import java.time.Duration
 import kotlin.math.exp
 
@@ -21,8 +21,9 @@ class ExponentialDelayRetryStrategy(private val times: Int, private val initialD
                     Thread.sleep(computeDelayMillis(counter))
                     retry(counter + 1, action)
                 }
+            } else {
+                throw error
             }
-            throw error
         }
 
     private fun computeDelayMillis(retryCount: Int): Long =

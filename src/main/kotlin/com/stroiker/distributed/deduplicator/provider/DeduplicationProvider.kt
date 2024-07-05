@@ -21,13 +21,13 @@ import com.stroiker.distributed.deduplicator.provider.DeduplicationProvider.Reco
 import com.stroiker.distributed.deduplicator.provider.DeduplicationProvider.RecordState.FAILED
 import com.stroiker.distributed.deduplicator.provider.DeduplicationProvider.RecordState.RETRY
 import com.stroiker.distributed.deduplicator.provider.DeduplicationProvider.RecordState.SUCCESS
-import com.stroiker.distributed.deduplicator.strategy.RetryStrategy
-import com.stroiker.distributed.deduplicator.strategy.impl.ExponentialDelayRetryStrategy
+import com.stroiker.distributed.deduplicator.strategy.sync.RetryStrategy
+import com.stroiker.distributed.deduplicator.strategy.sync.impl.ExponentialDelayRetryStrategy
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
-class DeduplicationProvider private constructor(
+open class DeduplicationProvider protected constructor(
     private val session: CqlSession,
     private val profileName: String,
     private val retryStrategy: RetryStrategy
@@ -42,7 +42,7 @@ class DeduplicationProvider private constructor(
         }
     }
 
-    fun <T> process(
+    open fun <T> process(
         key: String,
         table: String,
         keyspace: String,
