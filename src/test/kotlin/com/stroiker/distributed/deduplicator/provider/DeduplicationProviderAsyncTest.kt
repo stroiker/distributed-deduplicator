@@ -1,9 +1,6 @@
 package com.stroiker.distributed.deduplicator.provider
 
-import com.datastax.oss.driver.api.core.ConsistencyLevel
 import com.datastax.oss.driver.api.core.CqlSession
-import com.datastax.oss.driver.api.core.config.DefaultDriverOption
-import com.datastax.oss.driver.api.core.config.DriverConfigLoader
 import com.datastax.oss.driver.api.core.cql.BoundStatement
 import com.datastax.oss.driver.api.core.cql.ResultSet
 import com.datastax.oss.driver.api.core.cql.Statement
@@ -42,28 +39,19 @@ class DeduplicationProviderAsyncTest {
 
     private val keyspace = "test_keyspace"
     private val table = "test_table"
-    private val profileName = "test-profile"
 
     @Container
-    val cassandraCnt = CassandraContainer("cassandra").apply { start() }
+    val cassandraCnt = CassandraContainer("cassandra:4.0.4").apply { start() }
 
     private val session = spy(
         CqlSession.builder()
             .addContactPoints(listOf(InetSocketAddress("localhost", cassandraCnt.firstMappedPort)))
             .withLocalDatacenter("datacenter1")
-            .withConfigLoader(
-                DriverConfigLoader.programmaticBuilder()
-                    .startProfile(profileName)
-                    .withString(DefaultDriverOption.REQUEST_CONSISTENCY, ConsistencyLevel.LOCAL_QUORUM.name())
-                    .endProfile()
-                    .build()
-            )
             .build()
     )
 
     private val provider = DeduplicationProviderAsync.builder()
         .session(session)
-        .profile(profileName)
         .strategy(NoRetryStrategyAsync())
         .build()
 
@@ -96,8 +84,8 @@ class DeduplicationProviderAsyncTest {
             rows.first().also { row ->
                 assertEquals(key, row.get(DeduplicationProvider.KEY_COLUMN, TypeCodecs.TEXT))
                 assertEquals(
-                    DeduplicationProvider.RecordState.SUCCESS.name,
-                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.TEXT)
+                    DeduplicationProvider.RecordState.SUCCESS.value,
+                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.SMALLINT)
                 )
             }
         }
@@ -133,15 +121,15 @@ class DeduplicationProviderAsyncTest {
             rows.first().also { row ->
                 assertEquals(key, row.get(DeduplicationProvider.KEY_COLUMN, TypeCodecs.TEXT))
                 assertEquals(
-                    DeduplicationProvider.RecordState.SUCCESS.name,
-                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.TEXT)
+                    DeduplicationProvider.RecordState.SUCCESS.value,
+                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.SMALLINT)
                 )
             }
             rows.last().also { row ->
                 assertEquals(key, row.get(DeduplicationProvider.KEY_COLUMN, TypeCodecs.TEXT))
                 assertEquals(
-                    DeduplicationProvider.RecordState.DUPLICATE.name,
-                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.TEXT)
+                    DeduplicationProvider.RecordState.DUPLICATE.value,
+                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.SMALLINT)
                 )
             }
         }
@@ -152,7 +140,6 @@ class DeduplicationProviderAsyncTest {
         val cdl = CountDownLatch(1)
         val provider = DeduplicationProviderAsync.builder()
             .session(session)
-            .profile(profileName)
             .strategy(
                 object : RetryStrategyAsync {
                     override fun <T> retryAsync(action: () -> T): CompletableFuture<T> {
@@ -200,15 +187,15 @@ class DeduplicationProviderAsyncTest {
             rows.first().also { row ->
                 assertEquals(key, row.get(DeduplicationProvider.KEY_COLUMN, TypeCodecs.TEXT))
                 assertEquals(
-                    DeduplicationProvider.RecordState.RETRY.name,
-                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.TEXT)
+                    DeduplicationProvider.RecordState.RETRY.value,
+                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.SMALLINT)
                 )
             }
             rows.last().also { row ->
                 assertEquals(key, row.get(DeduplicationProvider.KEY_COLUMN, TypeCodecs.TEXT))
                 assertEquals(
-                    DeduplicationProvider.RecordState.DUPLICATE.name,
-                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.TEXT)
+                    DeduplicationProvider.RecordState.DUPLICATE.value,
+                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.SMALLINT)
                 )
             }
         }
@@ -240,8 +227,8 @@ class DeduplicationProviderAsyncTest {
             rows.first().also { row ->
                 assertEquals(key, row.get(DeduplicationProvider.KEY_COLUMN, TypeCodecs.TEXT))
                 assertEquals(
-                    DeduplicationProvider.RecordState.FAILED.name,
-                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.TEXT)
+                    DeduplicationProvider.RecordState.FAILED.value,
+                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.SMALLINT)
                 )
             }
         }
@@ -255,9 +242,9 @@ class DeduplicationProviderAsyncTest {
         doReturn(mockResultSet).`when`(session).execute(
             argThat<Statement<*>> {
                 when (this) {
-                    is BoundStatement -> this.preparedStatement.query.contains("INSERT", true) && this.getString(
+                    is BoundStatement -> this.preparedStatement.query.contains("INSERT", true) && this.getShort(
                         DeduplicationProvider.STATE_COLUMN
-                    ) == DeduplicationProvider.RecordState.FAILED.name
+                    ) == DeduplicationProvider.RecordState.FAILED.value
 
                     else -> false
                 }
@@ -286,8 +273,8 @@ class DeduplicationProviderAsyncTest {
             rows.first().also { row ->
                 assertEquals(key, row.get(DeduplicationProvider.KEY_COLUMN, TypeCodecs.TEXT))
                 assertEquals(
-                    DeduplicationProvider.RecordState.SUCCESS.name,
-                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.TEXT)
+                    DeduplicationProvider.RecordState.SUCCESS.value,
+                    row.get(DeduplicationProvider.STATE_COLUMN, TypeCodecs.SMALLINT)
                 )
             }
         }

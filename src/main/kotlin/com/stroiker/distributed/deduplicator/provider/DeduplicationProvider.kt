@@ -12,7 +12,6 @@ import com.datastax.oss.driver.api.core.type.DataTypes
 import com.datastax.oss.driver.api.core.type.codec.TypeCodecs
 import com.datastax.oss.driver.api.querybuilder.QueryBuilder
 import com.datastax.oss.driver.api.querybuilder.SchemaBuilder.createTable
-import com.stroiker.distributed.deduplicator.Utils.getConsistencyLevel
 import com.stroiker.distributed.deduplicator.Utils.getRequestTimeout
 import com.stroiker.distributed.deduplicator.exception.DuplicateException
 import com.stroiker.distributed.deduplicator.exception.FailedException
@@ -34,13 +33,6 @@ open class DeduplicationProvider protected constructor(
 ) {
 
     private val preparedStatementCache = ConcurrentHashMap<String, PreparedStatement>()
-
-    init {
-        when (session.getConsistencyLevel(profileName)) {
-            LOCAL_QUORUM, EACH_QUORUM -> {}
-            else -> throw UnsupportedOperationException("Only LOCAL_QUORUM or EACH_QUORUM consistency levels are supported. Weaker consistency levels can not guarantee strict deduplication")
-        }
-    }
 
     open fun <T> process(
         key: String,
@@ -120,8 +112,8 @@ open class DeduplicationProvider protected constructor(
     ) {
         getInsertStatement(table = table, keyspace = keyspace).bind()
             .setString(KEY_COLUMN, key)
-            .setString(STATE_COLUMN, SUCCESS.name)
             .setString(RECORD_UUID_COLUMN, recordUuid)
+            .setShort(STATE_COLUMN, SUCCESS.value)
             .setInt(TTL, ttl.seconds.toInt())
             .also { boundStatement ->
                 session.execute(boundStatement).wasApplied().also { applied ->
@@ -143,7 +135,7 @@ open class DeduplicationProvider protected constructor(
             .setString(KEY_COLUMN, key)
             .setUuid(TIME_UUID_COLUMN, timeUuid)
             .setString(RECORD_UUID_COLUMN, recordUuid)
-            .setString(STATE_COLUMN, state.name)
+            .setShort(STATE_COLUMN, state.value)
             .setInt(TTL, ttl.seconds.toInt())
             .also { boundStatement ->
                 session.execute(boundStatement).wasApplied().also { applied ->
@@ -161,6 +153,7 @@ open class DeduplicationProvider protected constructor(
                     .whereColumn(KEY_COLUMN).isEqualTo(QueryBuilder.bindMarker(KEY_COLUMN))
                     .build()
                     .setExecutionProfileName(profileName)
+                    .setConsistencyLevel(EACH_QUORUM)
             )
         }
 
@@ -176,6 +169,7 @@ open class DeduplicationProvider protected constructor(
                     .usingTtl(QueryBuilder.bindMarker(TTL))
                     .build()
                     .setExecutionProfileName(profileName)
+                    .setConsistencyLevel(LOCAL_QUORUM)
             )
         }
 
@@ -191,6 +185,7 @@ open class DeduplicationProvider protected constructor(
                     .usingTtl(QueryBuilder.bindMarker(TTL))
                     .build()
                     .setExecutionProfileName(profileName)
+                    .setConsistencyLevel(LOCAL_QUORUM)
             )
         }
 
@@ -200,7 +195,7 @@ open class DeduplicationProvider protected constructor(
             .withPartitionKey(KEY_COLUMN, DataTypes.TEXT)
             .withClusteringColumn(TIME_UUID_COLUMN, DataTypes.TIMEUUID)
             .withClusteringColumn(RECORD_UUID_COLUMN, DataTypes.TEXT)
-            .withColumn(STATE_COLUMN, DataTypes.TEXT)
+            .withColumn(STATE_COLUMN, DataTypes.SMALLINT)
             .withClusteringOrder(TIME_UUID_COLUMN, ClusteringOrder.ASC)
             .build()
             .also { session.execute(it) }
@@ -215,11 +210,16 @@ open class DeduplicationProvider protected constructor(
     private fun Row.toDeduplicationData() = DeduplicationData(
         recordUuid = get(RECORD_UUID_COLUMN, TypeCodecs.TEXT)!!,
         timeUuid = get(TIME_UUID_COLUMN, TypeCodecs.TIMEUUID)!!,
-        recordState = RecordState.valueOf(get(STATE_COLUMN, TypeCodecs.TEXT)!!)
+        recordState = RecordState.of(get(STATE_COLUMN, TypeCodecs.SMALLINT)!!)
     )
 
-    enum class RecordState {
-        SUCCESS, FAILED, DUPLICATE, RETRY
+    enum class RecordState(val value: Short) {
+        SUCCESS(1), DUPLICATE(2), RETRY(3), FAILED(4);
+
+        companion object {
+            fun of(value: Short): RecordState = RecordState.values().find { it.value == value }
+                ?: throw IllegalArgumentException("Unsupported state '$value'")
+        }
     }
 
     class DeduplicationProviderBuilder {
