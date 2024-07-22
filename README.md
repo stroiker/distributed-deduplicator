@@ -62,3 +62,8 @@ There are 3 implemented retry strategies:
 You can use async flow with following class `DeduplicationProviderAsync`. It provides similar functionality as `DeduplicationProvider` (include creation mechanism) with few differences:
 1) Main function `processAsync(...)` returns `CompletableFuture` object which can be used for building asynchronous processing;
 2) Asynchronous provider uses async retry strategies same as synchronous versions. These strategies provide non-blocking approach and offer better throughput when duplicate contention is high. You can pass your own thread pool for async retries or use default `ForkJoinPool` implementation;
+
+# Multiple datacenters
+
+Library is ready-to-work in cross-datacenters mode on read/write workloads and offers the same guaranties as in a single-datacenter mode. There is no extra configuration needed. All you need is up multiple Apache Cassandra clusters and provide appropriate paths to cluster nodes through session configuration.
+Consistency levels are configured automatically to reduce suffering from latency between datacenters. The typical throughput penalty for a 100ms cross-datacenter latency is ~3x.
