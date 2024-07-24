@@ -1,6 +1,6 @@
 # Introduction
 
-Distributed Deduplicator is a library for distributed, lock-free deduplication based on Apache Cassandra storage that offers a high-performance, highly scalable platform with strong data consistency and non-duplicate guarantee.
+Distributed Deduplicator is a library for cross-region distributed, lock-free deduplication based on Apache Cassandra storage that offers a high-performance, highly scalable platform with strong data consistency and non-duplicate guarantee.
 
 # System requirements
 
@@ -35,7 +35,7 @@ dependencies {
 # Quick start
 
 1) Start an Apache Cassandra cluster and create a keyspace, manually parameterized according to your business requirements (replication factor, etc.);
-2) Use builder `DeduplicationProvider.builder()` to create `DeduplicationProvider` instance. You can create a provider with a given Cassandra `CqlSession` object or using Cassandra `application.conf` configuration file from classpath by default. 
+2) Use builder `DeduplicationProviderBuilder.newProviderBuilder()` or `DeduplicationProviderBuilder.newAsyncProviderBuilder()` to create provider instance. You can create a provider with a given Cassandra `CqlSession` object or using Cassandra `application.conf` configuration file from classpath by default. 
 If you want to use separate session parameters (like consistency level, etc.) - you can configure a custom profile and pass the profile name during provider creation. Also, you can pass a retry strategy which is used to resolve undefined processing order from implemented strategies (see below) or implement your own strategy.
 3) Wrap your business logic which have to protect against duplicates in function `process(...)`. Next arguments have to pass to function:
 - `key` - idempotency key which is unique identifier of your business logic unit of work;
@@ -66,4 +66,8 @@ You can use async flow with following class `DeduplicationProviderAsync`. It pro
 # Multiple datacenters
 
 Library is ready-to-work in cross-datacenters mode on read/write workloads and offers the same guaranties as in a single-datacenter mode. There is no extra configuration needed. All you need is up multiple Apache Cassandra clusters and provide appropriate paths to cluster nodes through session configuration.
-Consistency levels are configured automatically to reduce suffering from latency between datacenters. The typical throughput penalty for a 100ms cross-datacenter latency is ~3x.
+Consistency levels are configured automatically to reduce suffering from latency between datacenters. 
+
+# Burst absorber
+
+Each provider can offer duplicate burst-absorber which greatly reduces number of retries caused by inner-process duplicate contention and reduces overall number of read request to storage, especially between datacenters. Duplicate burst absorber disabled by default, but you can configure it during provider creation if you faced with significant duplicates contention.

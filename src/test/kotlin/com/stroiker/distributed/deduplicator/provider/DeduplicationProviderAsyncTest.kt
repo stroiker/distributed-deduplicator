@@ -16,6 +16,7 @@ import com.nhaarman.mockitokotlin2.whenever
 import com.stroiker.distributed.deduplicator.exception.DuplicateException
 import com.stroiker.distributed.deduplicator.exception.FailedException
 import com.stroiker.distributed.deduplicator.exception.RetryException
+import com.stroiker.distributed.deduplicator.provider.builder.DeduplicationProviderBuilder
 import com.stroiker.distributed.deduplicator.randomString
 import com.stroiker.distributed.deduplicator.strategy.async.RetryStrategyAsync
 import com.stroiker.distributed.deduplicator.strategy.async.impl.NoRetryStrategyAsync
@@ -50,9 +51,9 @@ class DeduplicationProviderAsyncTest {
             .build()
     )
 
-    private val provider = DeduplicationProviderAsync.builder()
-        .session(session)
-        .strategy(NoRetryStrategyAsync())
+    private val provider = DeduplicationProviderBuilder.newAsyncProviderBuilder()
+        .withSession(session)
+        .withRetryStrategy(NoRetryStrategyAsync())
         .build()
 
     @BeforeEach
@@ -138,9 +139,9 @@ class DeduplicationProviderAsyncTest {
     @RetryingTest(maxAttempts = 5, name = "should process multiple duplicate keys in parallel - success")
     fun `should process multiple duplicate keys in parallel - success`() {
         val cdl = CountDownLatch(1)
-        val provider = DeduplicationProviderAsync.builder()
-            .session(session)
-            .strategy(
+        val provider = DeduplicationProviderBuilder.newAsyncProviderBuilder()
+            .withSession(session)
+            .withRetryStrategy(
                 object : RetryStrategyAsync {
                     override fun <T> retryAsync(action: () -> T): CompletableFuture<T> {
                         cdl.await()

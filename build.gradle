@@ -18,6 +18,7 @@ repositories {
 dependencies {
     api "org.apache.cassandra:java-driver-core:$cassandraDriverVersion"
     implementation "org.apache.cassandra:java-driver-query-builder:$cassandraDriverVersion"
+    implementation "com.github.ben-manes.caffeine:caffeine:$caffeineVersion"
 
     testImplementation "org.junit.jupiter:junit-jupiter-api:$junitVersion"
     testImplementation "com.nhaarman.mockitokotlin2:mockito-kotlin:$mockitoKotlinVersion"

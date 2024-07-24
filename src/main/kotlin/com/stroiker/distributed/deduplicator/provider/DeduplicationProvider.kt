@@ -3,8 +3,6 @@ package com.stroiker.distributed.deduplicator.provider
 import com.datastax.oss.driver.api.core.ConsistencyLevel.EACH_QUORUM
 import com.datastax.oss.driver.api.core.ConsistencyLevel.LOCAL_QUORUM
 import com.datastax.oss.driver.api.core.CqlSession
-import com.datastax.oss.driver.api.core.config.DriverConfigLoader
-import com.datastax.oss.driver.api.core.config.DriverExecutionProfile
 import com.datastax.oss.driver.api.core.cql.PreparedStatement
 import com.datastax.oss.driver.api.core.cql.Row
 import com.datastax.oss.driver.api.core.metadata.schema.ClusteringOrder
@@ -12,7 +10,7 @@ import com.datastax.oss.driver.api.core.type.DataTypes
 import com.datastax.oss.driver.api.core.type.codec.TypeCodecs
 import com.datastax.oss.driver.api.querybuilder.QueryBuilder
 import com.datastax.oss.driver.api.querybuilder.SchemaBuilder.createTable
-import com.stroiker.distributed.deduplicator.Utils.getRequestTimeout
+import com.stroiker.distributed.deduplicator.absorber.DuplicateBurstAbsorber
 import com.stroiker.distributed.deduplicator.exception.DuplicateException
 import com.stroiker.distributed.deduplicator.exception.FailedException
 import com.stroiker.distributed.deduplicator.exception.RetryException
@@ -21,15 +19,15 @@ import com.stroiker.distributed.deduplicator.provider.DeduplicationProvider.Reco
 import com.stroiker.distributed.deduplicator.provider.DeduplicationProvider.RecordState.RETRY
 import com.stroiker.distributed.deduplicator.provider.DeduplicationProvider.RecordState.SUCCESS
 import com.stroiker.distributed.deduplicator.strategy.sync.RetryStrategy
-import com.stroiker.distributed.deduplicator.strategy.sync.impl.ExponentialDelayRetryStrategy
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
-open class DeduplicationProvider protected constructor(
+open class DeduplicationProvider internal constructor(
     private val session: CqlSession,
     private val profileName: String,
-    private val retryStrategy: RetryStrategy
+    private val absorber: DuplicateBurstAbsorber,
+    private val strategy: RetryStrategy
 ) {
 
     private val preparedStatementCache = ConcurrentHashMap<String, PreparedStatement>()
@@ -40,58 +38,87 @@ open class DeduplicationProvider protected constructor(
         keyspace: String,
         ttl: Duration,
         block: () -> T
-    ): T = retryStrategy.retry {
-        UUID.randomUUID().toString().let { selfRecordUuid ->
-            insertRecord(key = key, keyspace = keyspace, recordUuid = selfRecordUuid, table = table, ttl = ttl)
-            val successRecords = getSuccessRecords(key = key, table = table, keyspace = keyspace)
-            if (successRecords.size > 1) {
-                val winner = successRecords.first()
-                if (selfRecordUuid == winner.recordUuid) {
-                    updateRecordState(
+    ): T = strategy.retry {
+        runCatching {
+            UUID.randomUUID().toString().let { selfRecordUuid ->
+                absorber.absorb(key) {
+                    insertRecord(
                         key = key,
-                        table = table,
                         keyspace = keyspace,
-                        timeUuid = winner.timeUuid,
-                        recordUuid = winner.recordUuid,
-                        state = RETRY,
-                        ttl = ttl
+                        recordUuid = selfRecordUuid,
+                        table = table,
+                        ttl = ttl,
+                        state = SUCCESS
                     )
-                    throw RetryException(key, table)
-                } else {
-                    successRecords.first { record -> record.recordUuid == selfRecordUuid }.let { self ->
+                    selfRecordUuid
+                }.also { absorbedRecordUuid ->
+                    if (absorbedRecordUuid != selfRecordUuid) {
+                        insertRecord(
+                            key = key,
+                            keyspace = keyspace,
+                            recordUuid = selfRecordUuid,
+                            table = table,
+                            ttl = ttl,
+                            state = DUPLICATE
+                        )
+                        throw DuplicateException(key, table)
+                    }
+                }
+                val successRecords = getSuccessRecords(key = key, table = table, keyspace = keyspace)
+                if (successRecords.size > 1) {
+                    val winner = successRecords.first()
+                    if (selfRecordUuid == winner.recordUuid) {
                         updateRecordState(
                             key = key,
                             table = table,
                             keyspace = keyspace,
-                            timeUuid = self.timeUuid,
-                            recordUuid = self.recordUuid,
-                            state = DUPLICATE,
+                            timeUuid = winner.timeUuid,
+                            recordUuid = winner.recordUuid,
+                            state = RETRY,
                             ttl = ttl
                         )
-                    }
-                    throw DuplicateException(key, table)
-                }
-            } else {
-                kotlin.runCatching { block.invoke() }.getOrElse { error ->
-                    runCatching {
-                        requireNotNull(successRecords.first { it.recordUuid == selfRecordUuid }) { "self record must not be null" }.let { self ->
+                        throw RetryException(key, table)
+                    } else {
+                        successRecords.first { record -> record.recordUuid == selfRecordUuid }.let { self ->
                             updateRecordState(
                                 key = key,
                                 table = table,
                                 keyspace = keyspace,
                                 timeUuid = self.timeUuid,
                                 recordUuid = self.recordUuid,
-                                state = FAILED,
+                                state = DUPLICATE,
                                 ttl = ttl
                             )
                         }
-                    }.getOrElse { updateError ->
-                        updateError.addSuppressed(error)
-                        throw updateError
+                        throw DuplicateException(key, table)
                     }
-                    throw error
+                } else {
+                    kotlin.runCatching { block.invoke() }.getOrElse { error ->
+                        runCatching {
+                            requireNotNull(successRecords.first { it.recordUuid == selfRecordUuid }) { "self record must not be null" }.let { self ->
+                                updateRecordState(
+                                    key = key,
+                                    table = table,
+                                    keyspace = keyspace,
+                                    timeUuid = self.timeUuid,
+                                    recordUuid = self.recordUuid,
+                                    state = FAILED,
+                                    ttl = ttl
+                                )
+                            }
+                        }.getOrElse { updateError ->
+                            updateError.addSuppressed(error)
+                            throw updateError
+                        }
+                        throw error
+                    }
                 }
             }
+        }.getOrElse { error ->
+            if (error is FailedException) {
+                absorber.evict(key)
+            }
+            throw error
         }
     }
 
@@ -99,7 +126,9 @@ open class DeduplicationProvider protected constructor(
         getSelectStatement(table = table, keyspace = keyspace).bind()
             .setString(KEY_COLUMN, key)
             .let { boundStatement ->
-                session.execute(boundStatement).map { row -> row.toDeduplicationData() }
+                runCatching { session.execute(boundStatement) }
+                    .getOrElse { error -> throw FailedException(key, table, error.message) }
+                    .map { row -> row.toDeduplicationData() }
                     .filter { deduplicationData -> deduplicationData.recordState == SUCCESS }
             }
 
@@ -108,17 +137,20 @@ open class DeduplicationProvider protected constructor(
         table: String,
         keyspace: String,
         recordUuid: String,
+        state: RecordState,
         ttl: Duration
     ) {
         getInsertStatement(table = table, keyspace = keyspace).bind()
             .setString(KEY_COLUMN, key)
             .setString(RECORD_UUID_COLUMN, recordUuid)
-            .setShort(STATE_COLUMN, SUCCESS.value)
+            .setShort(STATE_COLUMN, state.value)
             .setInt(TTL, ttl.seconds.toInt())
             .also { boundStatement ->
-                session.execute(boundStatement).wasApplied().also { applied ->
-                    if (!applied) throw FailedException(key, table, "Insert record wasn't applied")
-                }
+                runCatching { session.execute(boundStatement) }
+                    .getOrElse { error -> throw FailedException(key, table, error.message) }
+                    .wasApplied().also { applied ->
+                        if (!applied) throw FailedException(key, table, "Insert record wasn't applied")
+                    }
             }
     }
 
@@ -138,9 +170,11 @@ open class DeduplicationProvider protected constructor(
             .setShort(STATE_COLUMN, state.value)
             .setInt(TTL, ttl.seconds.toInt())
             .also { boundStatement ->
-                session.execute(boundStatement).wasApplied().also { applied ->
-                    if (!applied) throw FailedException(key, table, "Update record to '$state' wasn't applied")
-                }
+                runCatching { session.execute(boundStatement) }
+                    .getOrElse { error -> throw FailedException(key, table, error.message) }
+                    .wasApplied().also { applied ->
+                        if (!applied) throw FailedException(key, table, "Update record to '$state' wasn't applied")
+                    }
             }
     }
 
@@ -222,46 +256,11 @@ open class DeduplicationProvider protected constructor(
         }
     }
 
-    class DeduplicationProviderBuilder {
-
-        private var session: Lazy<CqlSession> = lazy {
-            CqlSession.builder()
-                .withConfigLoader(DriverConfigLoader.fromClasspath("application.conf"))
-                .build()
-        }
-        private var strategy: Lazy<RetryStrategy> = lazy {
-            ExponentialDelayRetryStrategy(
-                3,
-                session.value.getRequestTimeout(profileName).multipliedBy(2)
-            )
-        }
-        private var profileName: String = DriverExecutionProfile.DEFAULT_NAME
-
-        fun session(session: CqlSession): DeduplicationProviderBuilder {
-            this.session = lazyOf(session)
-            return this
-        }
-
-        fun strategy(strategy: RetryStrategy): DeduplicationProviderBuilder {
-            this.strategy = lazyOf(strategy)
-            return this
-        }
-
-        fun profile(profileName: String): DeduplicationProviderBuilder {
-            this.profileName = profileName
-            return this
-        }
-
-        fun build(): DeduplicationProvider = DeduplicationProvider(session.value, profileName, strategy.value)
-    }
-
     companion object {
         internal const val KEY_COLUMN = "key"
         internal const val TIME_UUID_COLUMN = "time_uuid"
         internal const val RECORD_UUID_COLUMN = "record_uuid"
         internal const val STATE_COLUMN = "state"
         internal const val TTL = "ttl"
-
-        fun builder() = DeduplicationProviderBuilder()
     }
 }
