@@ -18,6 +18,7 @@ import com.nhaarman.mockitokotlin2.whenever
 import com.stroiker.distributed.deduplicator.exception.DuplicateException
 import com.stroiker.distributed.deduplicator.exception.FailedException
 import com.stroiker.distributed.deduplicator.exception.RetryException
+import com.stroiker.distributed.deduplicator.provider.builder.DeduplicationProviderBuilder
 import com.stroiker.distributed.deduplicator.randomString
 import com.stroiker.distributed.deduplicator.strategy.sync.RetryStrategy
 import com.stroiker.distributed.deduplicator.strategy.sync.impl.NoRetryStrategy
@@ -59,10 +60,10 @@ class DeduplicationProviderTest {
             .build()
     )
 
-    private val provider = DeduplicationProvider.builder()
-        .session(session)
-        .profile(profileName)
-        .strategy(NoRetryStrategy())
+    private val provider = DeduplicationProviderBuilder.newProviderBuilder()
+        .withSession(session)
+        .withSessionProfile(profileName)
+        .withRetryStrategy(NoRetryStrategy())
         .build()
 
     @BeforeEach
@@ -144,10 +145,10 @@ class DeduplicationProviderTest {
     @RetryingTest(maxAttempts = 5, name = "should process multiple duplicate keys in parallel - success")
     fun `should process multiple duplicate keys in parallel - success`() {
         val cdl = CountDownLatch(1)
-        val provider = DeduplicationProvider.builder()
-            .session(session)
-            .profile(profileName)
-            .strategy(
+        val provider = DeduplicationProviderBuilder.newProviderBuilder()
+            .withSession(session)
+            .withSessionProfile(profileName)
+            .withRetryStrategy(
                 object : RetryStrategy {
                     override fun <T> retry(action: () -> T): T {
                         cdl.await()
