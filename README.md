@@ -4,7 +4,7 @@ Distributed Deduplicator is a library for cross-region distributed, lock-free de
 
 # System requirements
 
-- JDK 14
+- JDK 17
 - Apache Cassandra
 
 # Dependency
