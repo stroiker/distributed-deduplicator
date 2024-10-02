@@ -41,7 +41,7 @@ open class DeduplicationProvider internal constructor(
     ): T = strategy.retry {
         runCatching {
             UUID.randomUUID().toString().let { selfRecordUuid ->
-                absorber.absorb(key) {
+                absorber.absorb("$keyspace:$table:$key") {
                     insertRecord(
                         key = key,
                         keyspace = keyspace,
@@ -116,7 +116,7 @@ open class DeduplicationProvider internal constructor(
             }
         }.getOrElse { error ->
             if (error is FailedException) {
-                absorber.evict(key)
+                absorber.evict("$keyspace:$table:$key")
             }
             throw error
         }
